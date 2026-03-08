@@ -908,6 +908,50 @@ if __name__ == "__main__":
 
 ---
 
+## Testing
+
+76 tests covering every layer of the stack. Run with:
+
+```bash
+pip install -e ".[dev]"
+pytest -v
+```
+
+### Test Structure
+
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `test_types.py` | 14 | All data types — `ContentType`, `Identity`, `MessageContent`, `UnifiedMessage`, `OutboundMessage`, `Button`, `ChannelStatus`. Defaults, full construction, edge cases. |
+| `test_adapter.py` | 5 | `ChannelAdapter` base class — connect/disconnect lifecycle, `receive()` async iterator, `send()` return value, `run_forever()` cancel behavior, abstract instantiation guard. |
+| `test_middleware.py` | 7 | `AccessMiddleware` — allow, block, no-allowlist passthrough. `CommandMiddleware` — routing, passthrough, args parsing, `registered_commands` property. |
+| `test_manager.py` | 4 | Core `ChannelManager` pipeline — command end-to-end, access control blocking, fallback handler, `get_status()`. |
+| `test_manager_advanced.py` | 14 | Multi-channel routing, `OutboundMessage` return, `send()` direct push, unknown channel error, `broadcast()`, middleware chain order verification, short-circuit, no-reply/null-reply cases, auth+commands combo, fluent API chaining, no-channels guard. |
+| `test_adapters_unit.py` | 32 | Per-adapter unit tests with mocked SDKs: **IRC** (PRIVMSG parsing, commands, self-ignore, DM routing), **iMessage** (macOS-only), **WhatsApp** (text/command/image/reaction/reply-context), **Mattermost** (text/command/self-ignore/threads), **Twitch** (text/commands/self-ignore/IRC tags), **Zalo** (text/commands), **BlueBubbles/Synology/Nextcloud** (channel_id, status). Lazy import verification for all 18 adapter names. |
+
+### What's tested per adapter
+
+Adapters that require external SDKs (Telegram, Discord, Slack, LINE, Matrix, MS Teams, Feishu, Google Chat, Nostr) are tested through:
+1. **Lazy import** — verified they're registered in `__all__` and loadable via `__getattr__`
+2. **Message parsing** — tested where possible without SDK (WhatsApp, Mattermost, Zalo parse raw dicts)
+3. **Integration** — the `MockAdapter` in manager tests validates the full adapter protocol
+
+Adapters with no external deps (IRC, iMessage) have **direct unit tests** for message parsing, command detection, self-message filtering, and DM routing.
+
+### Running specific tests
+
+```bash
+# Just adapter tests
+pytest tests/test_adapters_unit.py -v
+
+# Just manager pipeline
+pytest tests/test_manager.py tests/test_manager_advanced.py -v
+
+# Single test
+pytest tests/test_adapters_unit.py::TestTwitchParsing::test_process_command -v
+```
+
+---
+
 ## License
 
 MIT

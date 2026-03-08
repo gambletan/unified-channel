@@ -110,6 +110,8 @@ That's it. Your bot is live, responding to `/status` and `/deploy staging`.
 - [Multi-Channel Setup](#multi-channel-setup)
 - [Message Types](#message-types)
 - [Writing a Custom Adapter](#writing-a-custom-adapter)
+- [ServiceBridge](#servicebridge)
+- [YAML Config](#yaml-config)
 - [Real-World Example](#real-world-example)
 - [API Reference](#api-reference)
 
@@ -823,6 +825,99 @@ manager.add_channel(MyAdapter(...))
 
 ---
 
+## ServiceBridge
+
+`ServiceBridge` is the fastest way to expose any service as a chat-controllable interface. Instead of wiring up `CommandMiddleware` by hand, you call `expose()` and get automatic `/help`, argument parsing, error handling, and sync-function support for free.
+
+```python
+import asyncio
+from unified_channel import ChannelManager, TelegramAdapter, ServiceBridge
+
+manager = ChannelManager()
+manager.add_channel(TelegramAdapter(token="BOT_TOKEN"))
+
+bridge = ServiceBridge(manager)
+
+# Expose any function as a chat command
+bridge.expose("deploy", lambda args: f"Deploying to {args[0] if args else 'staging'}...",
+              description="Deploy the app", params=["env"])
+
+# Sync or async — both work
+def disk_usage(args):
+    import shutil
+    total, used, free = shutil.disk_usage("/")
+    return f"Disk: {used // (1 << 30)}G / {total // (1 << 30)}G"
+
+bridge.expose("disk", disk_usage, description="Check disk usage")
+
+# Built-in /status and /logs shortcuts
+bridge.expose_status(lambda args: "All systems operational")
+bridge.expose_logs(lambda args: open("app.log").readlines()[-10:])
+
+# Handlers can receive the full UnifiedMessage
+async def whoami(args, msg):
+    return f"You are {msg.sender.username} on {msg.channel}"
+
+bridge.expose("whoami", whoami, description="Show caller info")
+
+asyncio.run(bridge.run())
+```
+
+This gives you `/help`, `/deploy`, `/disk`, `/status`, `/logs`, and `/whoami` — all with automatic error handling. If a command throws, the user gets a friendly error message instead of silence.
+
+### Flag parsing
+
+Arguments like `--force` and `--count 3` are automatically parsed:
+
+```python
+async def restart(args, msg):
+    flags = msg.metadata.get("_flags", {})
+    force = flags.get("force") == "true"
+    service = args[0] if args else "all"
+    return f"Restarting {service} (force={force})"
+
+bridge.expose("restart", restart, description="Restart services", params=["service"])
+# /restart nginx --force  →  "Restarting nginx (force=True)"
+```
+
+---
+
+## YAML Config
+
+Load channels and middleware from a config file instead of writing Python:
+
+```yaml
+# unified-channel.yaml
+channels:
+  telegram:
+    token: "${UC_TELEGRAM_TOKEN}"
+  discord:
+    token: "${UC_DISCORD_TOKEN}"
+  slack:
+    bot_token: "${UC_SLACK_BOT_TOKEN}"
+    app_token: "${UC_SLACK_APP_TOKEN}"
+
+middleware:
+  access:
+    allowed_users: ["admin_id_1", "admin_id_2"]
+
+settings:
+  command_prefix: "/"
+```
+
+```python
+from unified_channel import load_config, ServiceBridge
+
+manager = load_config("unified-channel.yaml")
+bridge = ServiceBridge(manager)
+bridge.expose("status", lambda args: "OK")
+asyncio.run(bridge.run())
+```
+
+Environment variables are interpolated with `${VAR}` syntax. Adapters are auto-detected by name. Returns a fully configured `ChannelManager` ready to use.
+
+---
+
 ## Real-World Example
 
 A complete remote management bot for a job queue system:
@@ -933,6 +1028,22 @@ if __name__ == "__main__":
 |-----------|-------------|
 | `allowed_user_ids` | `set[str]` of allowed sender IDs. `None` = allow all |
 
+### ServiceBridge
+
+| Method | Description |
+|--------|-------------|
+| `ServiceBridge(manager, prefix="/")` | Create a bridge wrapping a `ChannelManager` |
+| `expose(name, handler, description, params)` | Expose a function as a chat command |
+| `expose_status(handler)` | Register `/status` command |
+| `expose_logs(handler)` | Register `/logs` command |
+| `await run()` | Start the bridge (delegates to `manager.run()`) |
+
+### load_config
+
+| Function | Description |
+|----------|-------------|
+| `load_config(path)` | Load a YAML config file, return a configured `ChannelManager` |
+
 ### Adapters
 
 | Adapter | Install Extra | Mode | Needs Public URL |
@@ -960,7 +1071,7 @@ if __name__ == "__main__":
 
 ## Testing
 
-76 tests covering every layer of the stack. Run with:
+96 tests covering every layer of the stack. Run with:
 
 ```bash
 pip install -e ".[dev]"
@@ -977,6 +1088,8 @@ pytest -v
 | `test_manager.py` | 4 | Core `ChannelManager` pipeline — command end-to-end, access control blocking, fallback handler, `get_status()`. |
 | `test_manager_advanced.py` | 14 | Multi-channel routing, `OutboundMessage` return, `send()` direct push, unknown channel error, `broadcast()`, middleware chain order verification, short-circuit, no-reply/null-reply cases, auth+commands combo, fluent API chaining, no-channels guard. |
 | `test_adapters_unit.py` | 32 | Per-adapter unit tests with mocked SDKs: **IRC** (PRIVMSG parsing, commands, self-ignore, DM routing), **iMessage** (macOS-only), **WhatsApp** (text/command/image/reaction/reply-context), **Mattermost** (text/command/self-ignore/threads), **Twitch** (text/commands/self-ignore/IRC tags), **Zalo** (text/commands), **BlueBubbles/Synology/Nextcloud** (channel_id, status). Lazy import verification for all 18 adapter names. |
+| `test_bridge.py` | 12 | `ServiceBridge` — expose commands, sync/async handlers, args/flag parsing, `/help` generation, `/status` + `/logs` shortcuts, error handling, handler signature detection. |
+| `test_config.py` | 8 | YAML config loading — env var interpolation (basic, embedded, missing, non-string), nested dict interpolation, full config parse with mocked adapter, empty file error, missing PyYAML error. |
 
 ### What's tested per adapter
 

@@ -2,6 +2,8 @@ from .types import UnifiedMessage, MessageContent, Identity, ChannelStatus, Cont
 from .adapter import ChannelAdapter
 from .middleware import Middleware, CommandMiddleware, AccessMiddleware
 from .manager import ChannelManager
+from .bridge import ServiceBridge
+from .config import load_config
 
 _LAZY_ADAPTERS = {
     "TelegramAdapter": ".adapters.telegram",
@@ -34,6 +36,6 @@ def __getattr__(name):
 __all__ = [
     "UnifiedMessage", "MessageContent", "Identity", "ChannelStatus", "ContentType",
     "ChannelAdapter", "Middleware", "CommandMiddleware", "AccessMiddleware",
-    "ChannelManager",
+    "ChannelManager", "ServiceBridge", "load_config",
     *_LAZY_ADAPTERS.keys(),
 ]

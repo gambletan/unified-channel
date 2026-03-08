@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "unified-channel"
+version = "0.1.0"
+description = "Unified message middleware for Python — 19 channels, 1 API"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/gambletan/unified-channel"
+Repository = "https://github.com/gambletan/unified-channel"
+
+[project.optional-dependencies]
+telegram = ["python-telegram-bot>=21.0"]
+discord = ["discord.py>=2.3"]
+slack = ["slack-bolt>=1.18"]
+line = ["line-bot-sdk>=3.0", "aiohttp>=3.9"]
+matrix = ["matrix-nio>=0.24"]
+msteams = ["botbuilder-core>=4.15", "botbuilder-integration-aiohttp>=4.15", "aiohttp>=3.9"]
+feishu = ["lark-oapi>=1.0", "aiohttp>=3.9"]
+whatsapp = ["httpx>=0.25", "aiohttp>=3.9"]
+imessage = []
+mattermost = ["websockets>=12.0", "httpx>=0.25"]
+googlechat = ["google-auth>=2.0", "aiohttp>=3.9", "httpx>=0.25"]
+nextcloud = ["httpx>=0.25"]
+synology = ["aiohttp>=3.9", "httpx>=0.25"]
+zalo = ["httpx>=0.25", "aiohttp>=3.9"]
+nostr = ["websockets>=12.0", "secp256k1>=0.14", "cryptography>=41.0"]
+bluebubbles = ["httpx>=0.25"]
+twitch = ["websockets>=12.0"]
+irc = []
+all = [
+    "python-telegram-bot>=21.0",
+    "discord.py>=2.3",
+    "slack-bolt>=1.18",
+    "line-bot-sdk>=3.0",
+    "matrix-nio>=0.24",
+    "botbuilder-core>=4.15",
+    "botbuilder-integration-aiohttp>=4.15",
+    "lark-oapi>=1.0",
+    "httpx>=0.25",
+    "aiohttp>=3.9",
+    "websockets>=12.0",
+    "google-auth>=2.0",
+    "secp256k1>=0.14",
+    "cryptography>=41.0",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"

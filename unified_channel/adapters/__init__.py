@@ -17,6 +17,9 @@ _ADAPTERS = {
     "BlueBubblesAdapter": ".bluebubbles",
     "TwitchAdapter": ".twitch",
     "IRCAdapter": ".irc",
+    "WeChatAdapter": ".wechat",
+    "DingTalkAdapter": ".dingtalk",
+    "QQAdapter": ".qq",
 }
 
 def __getattr__(name):

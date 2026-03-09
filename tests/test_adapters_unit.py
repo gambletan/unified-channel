@@ -103,6 +103,62 @@ class TestIRCAdapter:
         assert msg.chat_id == "alice"  # reply to sender, not to ourselves
 
 
+# ── Telegram adapter tests (mode config) ──────────────────────────────────
+
+class TestTelegramAdapter:
+    @pytest.fixture
+    def _mock_telegram(self):
+        """Mock telegram modules so we can import the adapter without a real install path."""
+        mock_update = MagicMock()
+        mock_ext = MagicMock()
+        with patch.dict(sys.modules, {
+            "telegram": MagicMock(Update=mock_update),
+            "telegram.ext": mock_ext,
+        }):
+            yield
+
+    def test_defaults_to_polling(self):
+        from unified_channel.adapters.telegram import TelegramAdapter
+        adapter = TelegramAdapter(token="123:ABC")
+        assert adapter.mode == "polling"
+        assert adapter.channel_id == "telegram"
+
+    def test_webhook_mode(self):
+        from unified_channel.adapters.telegram import TelegramAdapter
+        adapter = TelegramAdapter(
+            token="123:ABC",
+            mode="webhook",
+            webhook_url="https://example.com",
+            port=9000,
+            url_path="/hook",
+        )
+        assert adapter.mode == "webhook"
+        assert adapter._webhook_url == "https://example.com"
+        assert adapter._port == 9000
+        assert adapter._url_path == "/hook"
+
+    def test_webhook_defaults(self):
+        from unified_channel.adapters.telegram import TelegramAdapter
+        adapter = TelegramAdapter(token="123:ABC", mode="webhook", webhook_url="https://example.com")
+        assert adapter._port == 8443
+        assert adapter._url_path == "/telegram-webhook"
+        assert adapter._listen == "0.0.0.0"
+
+    @pytest.mark.asyncio
+    async def test_get_status_disconnected(self):
+        from unified_channel.adapters.telegram import TelegramAdapter
+        adapter = TelegramAdapter(token="123:ABC")
+        status = await adapter.get_status()
+        assert status.connected is False
+        assert status.channel == "telegram"
+
+    def test_backward_compatible_parse_mode(self):
+        from unified_channel.adapters.telegram import TelegramAdapter
+        adapter = TelegramAdapter(token="123:ABC", parse_mode="HTML")
+        assert adapter._parse_mode == "HTML"
+        assert adapter.mode == "polling"
+
+
 # ── Adapter lazy import tests ─────────────────────────────────────────────
 
 class TestLazyImports:
@@ -677,3 +733,499 @@ class TestIMessageEdgeCases:
         adapter = IMessageAdapter()
         status = await adapter.get_status()
         assert status.channel == "imessage"
+
+
+# ── WeChat (企业微信) adapter tests ──────────────────────────────────────
+
+class TestWeChatAdapter:
+    @pytest.fixture
+    def adapter(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "requests": MagicMock(),
+            "Crypto": MagicMock(), "Crypto.Cipher": MagicMock(), "Crypto.Cipher.AES": MagicMock(),
+        }):
+            from unified_channel.adapters.wechat import WeChatAdapter
+            return WeChatAdapter(
+                corp_id="ww1234567890",
+                corp_secret="secret123",
+                agent_id="1000001",
+                token="callback_token",
+                encoding_aes_key="a" * 43,
+            )
+
+    def test_channel_id(self, adapter):
+        assert adapter.channel_id == "wechat"
+
+    @pytest.mark.asyncio
+    async def test_get_status_disconnected(self, adapter):
+        status = await adapter.get_status()
+        assert status.connected is False
+        assert status.channel == "wechat"
+        assert "ww1234567890" in status.account_id
+        assert "1000001" in status.account_id
+
+    @pytest.mark.asyncio
+    async def test_process_text_message(self, adapter):
+        xml = """<xml>
+            <MsgType>text</MsgType>
+            <FromUserName>user001</FromUserName>
+            <ToUserName>bot001</ToUserName>
+            <MsgId>msg123</MsgId>
+            <CreateTime>1700000000</CreateTime>
+            <AgentID>1000001</AgentID>
+            <Content>hello world</Content>
+        </xml>"""
+        await adapter._process_message(xml)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.TEXT
+        assert msg.content.text == "hello world"
+        assert msg.sender.id == "user001"
+        assert msg.channel == "wechat"
+
+    @pytest.mark.asyncio
+    async def test_process_command(self, adapter):
+        xml = """<xml>
+            <MsgType>text</MsgType>
+            <FromUserName>user001</FromUserName>
+            <ToUserName>bot001</ToUserName>
+            <MsgId>msg456</MsgId>
+            <CreateTime>1700000000</CreateTime>
+            <AgentID>1000001</AgentID>
+            <Content>/status workers</Content>
+        </xml>"""
+        await adapter._process_message(xml)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.COMMAND
+        assert msg.content.command == "status"
+        assert msg.content.args == ["workers"]
+
+    @pytest.mark.asyncio
+    async def test_process_image(self, adapter):
+        xml = """<xml>
+            <MsgType>image</MsgType>
+            <FromUserName>user001</FromUserName>
+            <ToUserName>bot001</ToUserName>
+            <MsgId>msg789</MsgId>
+            <CreateTime>1700000000</CreateTime>
+            <AgentID>1000001</AgentID>
+            <PicUrl>https://example.com/pic.jpg</PicUrl>
+        </xml>"""
+        await adapter._process_message(xml)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.MEDIA
+        assert msg.content.media_type == "image"
+        assert msg.content.media_url == "https://example.com/pic.jpg"
+
+    @pytest.mark.asyncio
+    async def test_event_messages_skipped(self, adapter):
+        xml = """<xml>
+            <MsgType>event</MsgType>
+            <FromUserName>user001</FromUserName>
+            <ToUserName>bot001</ToUserName>
+            <CreateTime>1700000000</CreateTime>
+            <Event>subscribe</Event>
+        </xml>"""
+        await adapter._process_message(xml)
+        assert adapter._queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_chat_id_is_sender(self, adapter):
+        xml = """<xml>
+            <MsgType>text</MsgType>
+            <FromUserName>user002</FromUserName>
+            <ToUserName>bot001</ToUserName>
+            <MsgId>msg999</MsgId>
+            <CreateTime>1700000000</CreateTime>
+            <Content>hi</Content>
+        </xml>"""
+        await adapter._process_message(xml)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.chat_id == "user002"
+
+
+class TestWeChatCrypto:
+    def test_pkcs7_pad_unpad(self):
+        from unified_channel.adapters.wechat import _pkcs7_pad, _pkcs7_unpad
+        data = b"hello"
+        padded = _pkcs7_pad(data)
+        assert len(padded) % 32 == 0
+        assert _pkcs7_unpad(padded) == data
+
+    def test_pkcs7_pad_exact_block(self):
+        from unified_channel.adapters.wechat import _pkcs7_pad, _pkcs7_unpad
+        data = b"x" * 32
+        padded = _pkcs7_pad(data)
+        assert len(padded) == 64  # full extra block
+        assert _pkcs7_unpad(padded) == data
+
+    def test_verify_signature(self):
+        from unified_channel.adapters.wechat import WeChatCrypto
+        crypto = WeChatCrypto(token="test_token", encoding_aes_key="a" * 43, corp_id="corp1")
+        # Manually compute expected signature
+        import hashlib
+        items = sorted(["test_token", "12345", "nonce1", "encrypted_str"])
+        expected = hashlib.sha1("".join(items).encode()).hexdigest()
+        assert crypto.verify_signature(expected, "12345", "nonce1", "encrypted_str")
+        assert not crypto.verify_signature("wrong", "12345", "nonce1", "encrypted_str")
+
+
+# ── DingTalk (钉钉) adapter tests ───────────────────────────────────────
+
+class TestDingTalkAdapter:
+    @pytest.fixture
+    def webhook_adapter(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "requests": MagicMock(),
+        }):
+            from unified_channel.adapters.dingtalk import DingTalkAdapter
+            return DingTalkAdapter(
+                webhook_url="https://oapi.dingtalk.com/robot/send?access_token=test123",
+                secret="SEC_test_secret",
+            )
+
+    @pytest.fixture
+    def enterprise_adapter(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "requests": MagicMock(),
+        }):
+            from unified_channel.adapters.dingtalk import DingTalkAdapter
+            return DingTalkAdapter(
+                app_key="dingtest123",
+                app_secret="secret456",
+            )
+
+    def test_channel_id(self, webhook_adapter):
+        assert webhook_adapter.channel_id == "dingtalk"
+
+    @pytest.mark.asyncio
+    async def test_get_status_disconnected(self, webhook_adapter):
+        status = await webhook_adapter.get_status()
+        assert status.connected is False
+        assert status.channel == "dingtalk"
+
+    @pytest.mark.asyncio
+    async def test_enterprise_status(self, enterprise_adapter):
+        status = await enterprise_adapter.get_status()
+        assert status.account_id == "dingtest123"
+
+    def test_sign_webhook(self, webhook_adapter):
+        sig = webhook_adapter._sign_webhook("1700000000000")
+        assert isinstance(sig, str)
+        assert len(sig) > 0
+
+    def test_verify_callback_no_secret(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "requests": MagicMock(),
+        }):
+            from unified_channel.adapters.dingtalk import DingTalkAdapter
+            adapter = DingTalkAdapter(webhook_url="https://test.com")
+            # Without app_secret, verification always passes
+            assert adapter._verify_callback_signature("ts", "any") is True
+
+    @pytest.mark.asyncio
+    async def test_process_text_message(self, enterprise_adapter):
+        body = {
+            "msgtype": "text",
+            "text": {"content": "hello dingtalk"},
+            "senderStaffId": "staff001",
+            "senderNick": "Alice",
+            "conversationId": "conv123",
+            "msgId": "msg001",
+            "conversationType": "2",
+            "createAt": 1700000000000,
+        }
+        await enterprise_adapter._process_message(body)
+        msg = await asyncio.wait_for(enterprise_adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.TEXT
+        assert msg.content.text == "hello dingtalk"
+        assert msg.sender.id == "staff001"
+        assert msg.sender.display_name == "Alice"
+        assert msg.chat_id == "conv123"
+
+    @pytest.mark.asyncio
+    async def test_process_command(self, enterprise_adapter):
+        body = {
+            "msgtype": "text",
+            "text": {"content": "/deploy staging"},
+            "senderStaffId": "staff001",
+            "senderNick": "Bob",
+            "conversationId": "conv456",
+            "msgId": "msg002",
+            "conversationType": "2",
+            "createAt": 1700000000000,
+        }
+        await enterprise_adapter._process_message(body)
+        msg = await asyncio.wait_for(enterprise_adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.COMMAND
+        assert msg.content.command == "deploy"
+        assert msg.content.args == ["staging"]
+
+    @pytest.mark.asyncio
+    async def test_process_picture(self, enterprise_adapter):
+        body = {
+            "msgtype": "picture",
+            "content": {"downloadCode": "dl_123"},
+            "senderStaffId": "staff001",
+            "conversationId": "conv789",
+            "msgId": "msg003",
+            "conversationType": "2",
+            "createAt": 1700000000000,
+        }
+        await enterprise_adapter._process_message(body)
+        msg = await asyncio.wait_for(enterprise_adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.MEDIA
+        assert msg.content.media_type == "image"
+        assert msg.content.media_url == "dl_123"
+
+    @pytest.mark.asyncio
+    async def test_1v1_chat_uses_sender_as_chat_id(self, enterprise_adapter):
+        body = {
+            "msgtype": "text",
+            "text": {"content": "hi"},
+            "senderStaffId": "staff001",
+            "conversationId": "conv001",
+            "msgId": "msg004",
+            "conversationType": "1",
+            "createAt": 1700000000000,
+        }
+        await enterprise_adapter._process_message(body)
+        msg = await asyncio.wait_for(enterprise_adapter._queue.get(), timeout=1)
+        assert msg.chat_id == "staff001"
+
+    @pytest.mark.asyncio
+    async def test_process_rich_text(self, enterprise_adapter):
+        body = {
+            "msgtype": "richText",
+            "content": {"richText": [{"text": "part1"}, {"text": "part2"}]},
+            "senderStaffId": "staff001",
+            "conversationId": "conv002",
+            "msgId": "msg005",
+            "conversationType": "2",
+            "createAt": 1700000000000,
+        }
+        await enterprise_adapter._process_message(body)
+        msg = await asyncio.wait_for(enterprise_adapter._queue.get(), timeout=1)
+        assert msg.content.text == "part1part2"
+
+
+# ── QQ Bot (QQ 官方机器人) adapter tests ────────────────────────────────
+
+class TestQQAdapter:
+    @pytest.fixture
+    def adapter(self):
+        with patch.dict(sys.modules, {"aiohttp": MagicMock()}):
+            from unified_channel.adapters.qq import QQAdapter
+            a = QQAdapter(app_id="app123", token="token456", secret="secret789")
+            a._bot_id = "bot001"
+            a._bot_username = "TestBot"
+            a._connected = True
+            return a
+
+    def test_channel_id(self, adapter):
+        assert adapter.channel_id == "qq"
+
+    @pytest.mark.asyncio
+    async def test_get_status_disconnected(self):
+        with patch.dict(sys.modules, {"aiohttp": MagicMock()}):
+            from unified_channel.adapters.qq import QQAdapter
+            a = QQAdapter(app_id="app123", token="token456")
+            status = await a.get_status()
+            assert status.connected is False
+            assert status.channel == "qq"
+            assert status.account_id == "app123"
+
+    @pytest.mark.asyncio
+    async def test_get_status_connected(self, adapter):
+        status = await adapter.get_status()
+        assert status.connected is True
+        assert status.account_id == "TestBot"
+
+    @pytest.mark.asyncio
+    async def test_process_guild_message(self, adapter):
+        data = {
+            "id": "msg001",
+            "content": "hello qq",
+            "author": {"id": "user001", "username": "Alice", "bot": False},
+            "channel_id": "chan001",
+            "guild_id": "guild001",
+            "timestamp": "2024-01-01T00:00:00+00:00",
+        }
+        await adapter._process_guild_message(data, "MESSAGE_CREATE")
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.TEXT
+        assert msg.content.text == "hello qq"
+        assert msg.sender.id == "user001"
+        assert msg.sender.username == "Alice"
+        assert msg.chat_id == "chan001"
+
+    @pytest.mark.asyncio
+    async def test_process_guild_command(self, adapter):
+        data = {
+            "id": "msg002",
+            "content": "/status workers",
+            "author": {"id": "user001", "username": "Alice"},
+            "channel_id": "chan001",
+            "guild_id": "guild001",
+        }
+        await adapter._process_guild_message(data, "MESSAGE_CREATE")
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.COMMAND
+        assert msg.content.command == "status"
+        assert msg.content.args == ["workers"]
+
+    @pytest.mark.asyncio
+    async def test_process_at_message_strips_mention(self, adapter):
+        data = {
+            "id": "msg003",
+            "content": f"<@!bot001> hello bot",
+            "author": {"id": "user001", "username": "Alice"},
+            "channel_id": "chan001",
+            "guild_id": "guild001",
+        }
+        await adapter._process_guild_message(data, "AT_MESSAGE_CREATE")
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.text == "hello bot"
+
+    @pytest.mark.asyncio
+    async def test_process_dm(self, adapter):
+        data = {
+            "id": "msg004",
+            "content": "private hello",
+            "author": {"id": "user001", "username": "Alice"},
+            "channel_id": "chan002",
+            "guild_id": "guild002",
+        }
+        await adapter._process_guild_message(data, "DIRECT_MESSAGE_CREATE")
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.chat_id == "dm:guild002"
+
+    @pytest.mark.asyncio
+    async def test_process_group_message(self, adapter):
+        data = {
+            "id": "msg005",
+            "content": "group hello",
+            "author": {"member_openid": "member001"},
+            "group_openid": "group001",
+        }
+        await adapter._process_group_message(data)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.sender.id == "member001"
+        assert msg.chat_id == "group:group001"
+
+    @pytest.mark.asyncio
+    async def test_process_c2c_message(self, adapter):
+        data = {
+            "id": "msg006",
+            "content": "c2c hello",
+            "author": {"user_openid": "openid001"},
+        }
+        await adapter._process_c2c_message(data)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.sender.id == "openid001"
+        assert msg.chat_id == "openid001"
+
+    @pytest.mark.asyncio
+    async def test_ignores_own_guild_messages(self, adapter):
+        data = {
+            "id": "msg007",
+            "content": "echo",
+            "author": {"id": "bot001", "username": "TestBot", "bot": True},
+            "channel_id": "chan001",
+            "guild_id": "guild001",
+        }
+        await adapter._process_guild_message(data, "MESSAGE_CREATE")
+        assert adapter._queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_process_attachment(self, adapter):
+        data = {
+            "id": "msg008",
+            "content": "look at this",
+            "author": {"id": "user001", "username": "Alice"},
+            "channel_id": "chan001",
+            "guild_id": "guild001",
+            "attachments": [{"content_type": "image/png", "url": "https://example.com/img.png"}],
+        }
+        await adapter._process_guild_message(data, "MESSAGE_CREATE")
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.type == ContentType.MEDIA
+        assert msg.content.media_type == "image/png"
+        assert msg.content.media_url == "https://example.com/img.png"
+
+    def test_parse_content_text(self, adapter):
+        mc = adapter._parse_content("hello", {})
+        assert mc.type == ContentType.TEXT
+        assert mc.text == "hello"
+
+    def test_parse_content_command(self, adapter):
+        mc = adapter._parse_content("/deploy prod", {})
+        assert mc.type == ContentType.COMMAND
+        assert mc.command == "deploy"
+        assert mc.args == ["prod"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_heartbeat_ack(self, adapter):
+        # Heartbeat ACK should not produce any messages
+        await adapter._dispatch({"op": 11, "s": None, "t": None, "d": {}})
+        assert adapter._queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_message_create(self, adapter):
+        payload = {
+            "op": 0,
+            "s": 5,
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "msg010",
+                "content": "dispatch test",
+                "author": {"id": "user001", "username": "Alice"},
+                "channel_id": "chan001",
+                "guild_id": "guild001",
+            },
+        }
+        await adapter._dispatch(payload)
+        msg = await asyncio.wait_for(adapter._queue.get(), timeout=1)
+        assert msg.content.text == "dispatch test"
+        assert adapter._sequence == 5
+
+    def test_sandbox_api_base(self):
+        with patch.dict(sys.modules, {"aiohttp": MagicMock()}):
+            from unified_channel.adapters.qq import QQAdapter, QQ_SANDBOX_API_BASE
+            a = QQAdapter(app_id="app1", token="tok1", sandbox=True)
+            assert a._api_base == QQ_SANDBOX_API_BASE
+
+    def test_default_intents(self, adapter):
+        from unified_channel.adapters.qq import QQAdapter
+        assert adapter._intents == QQAdapter.DEFAULT_INTENTS
+
+
+# ── Lazy import tests for new adapters ─────────────────────────────────
+
+class TestNewAdapterLazyImports:
+    def test_wechat_in_adapters_all(self):
+        from unified_channel.adapters import __all__
+        assert "WeChatAdapter" in __all__
+
+    def test_dingtalk_in_adapters_all(self):
+        from unified_channel.adapters import __all__
+        assert "DingTalkAdapter" in __all__
+
+    def test_qq_in_adapters_all(self):
+        from unified_channel.adapters import __all__
+        assert "QQAdapter" in __all__
+
+    def test_wechat_in_package_all(self):
+        import unified_channel
+        assert "WeChatAdapter" in unified_channel.__all__
+
+    def test_dingtalk_in_package_all(self):
+        import unified_channel
+        assert "DingTalkAdapter" in unified_channel.__all__
+
+    def test_qq_in_package_all(self):
+        import unified_channel
+        assert "QQAdapter" in unified_channel.__all__

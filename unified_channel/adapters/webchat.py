@@ -178,6 +178,9 @@ class WebChatAdapter(ChannelAdapter):
         url_name = query.get("name")
         url_phone = query.get("phone")
 
+        # Allow session resumption via ?session_id=xxx (e.g. from localStorage)
+        url_session_id = query.get("session_id")
+
         if url_user_id:
             # Authenticated user — use their user_id as session key
             session_id = f"u_{url_user_id}"
@@ -187,8 +190,18 @@ class WebChatAdapter(ChannelAdapter):
                 "name": url_name or url_user_id,
                 "phone": url_phone,
             }
+        elif url_session_id:
+            # Returning anonymous visitor — reuse previous session
+            session_id = url_session_id
+            prev_info = self._user_info.get(session_id)
+            user_info = prev_info or {
+                "user_type": "anonymous",
+                "user_id": None,
+                "name": None,
+                "phone": None,
+            }
         else:
-            # Anonymous visitor
+            # New anonymous visitor
             session_id = uuid.uuid4().hex[:12]
             user_info = {
                 "user_type": "anonymous",

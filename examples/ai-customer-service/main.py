@@ -21,10 +21,11 @@ Customer Service IM — POC (Full-Featured)
 - 日报 + 热词分析
 
 启动:
-    export TELEGRAM_TOKEN="your-bot-token"
-    export SUPPORT_GROUP_ID="-100xxxxxxxxxx"
-    export OPENAI_API_KEY="sk-..."          # 翻译 + 语音转文字
-    python examples/customer_service_poc.py
+    # In ~/.env:
+    CS_TELEGRAM_TOKEN="your-bot-token"
+    CS_SUPPORT_GROUP_ID="-100xxxxxxxxxx"
+    MINIMAX_API_KEY="sk-..."               # 翻译 + 语言检测
+    python examples/ai-customer-service/main.py
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent / ".env", override=True)
+load_dotenv(Path.home() / ".env", override=True)
 
 from aiohttp import web
 
@@ -63,8 +64,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 logger = logging.getLogger("customer_service")
 
 # --- Config ---
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-SUPPORT_GROUP_ID = os.environ["SUPPORT_GROUP_ID"]
+TELEGRAM_TOKEN = os.environ["CS_TELEGRAM_TOKEN"]
+SUPPORT_GROUP_ID = os.environ["CS_SUPPORT_GROUP_ID"]
 WEBCHAT_PORT = int(os.environ.get("WEBCHAT_PORT", "8081"))
 WKIM_PORT = int(os.environ.get("WKIM_PORT", "8080"))
 DB_PATH = os.environ.get("CS_DB_PATH", "cs_data.db")

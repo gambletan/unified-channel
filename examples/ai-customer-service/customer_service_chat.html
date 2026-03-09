@@ -138,14 +138,18 @@ window.addEventListener('message', (e) => {
 
 function buildWsUrl() {
   const base = `ws://${location.host}/ws`;
+  const params = new URLSearchParams();
   if (chatUser && chatUser.user_id) {
-    const params = new URLSearchParams();
     params.set('user_id', chatUser.user_id);
     if (chatUser.name) params.set('name', chatUser.name);
     if (chatUser.phone) params.set('phone', chatUser.phone);
-    return `${base}?${params.toString()}`;
+  } else {
+    // Resume previous anonymous session if available
+    const saved = localStorage.getItem('cs_session_id');
+    if (saved) params.set('session_id', saved);
   }
-  return base;
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
 }
 
 // --- UI ---
@@ -185,7 +189,10 @@ function connect() {
     const data = JSON.parse(e.data);
 
     if (data.type === 'system') {
-      if (data.session_id) sessionId = data.session_id;
+      if (data.session_id) {
+        sessionId = data.session_id;
+        localStorage.setItem('cs_session_id', sessionId);
+      }
       if (data.text === 'connected') {
         const label = data.user_type === 'authenticated' ? '已连接（已登录）' : '已连接，请输入您的问题';
         addMessage('system', label);
@@ -274,14 +281,20 @@ function addMessageWithButtons(text, buttons) {
   const div = document.createElement('div');
   div.className = 'msg agent';
 
-  let html = `<div>${escapeHtml(text)}</div>`;
-  html += '<div class="rating-bar">';
-  buttons.flat().forEach(btn => {
-    html += `<button onclick="sendCallback('${escapeHtml(btn.callback_data)}')">${escapeHtml(btn.label)}</button>`;
-  });
-  html += '</div>';
+  const textDiv = document.createElement('div');
+  textDiv.textContent = text;
+  div.appendChild(textDiv);
 
-  div.innerHTML = html;
+  const bar = document.createElement('div');
+  bar.className = 'rating-bar';
+  buttons.flat().forEach(btn => {
+    const b = document.createElement('button');
+    b.textContent = btn.label;
+    b.addEventListener('click', () => sendCallback(btn.callback_data));
+    bar.appendChild(b);
+  });
+  div.appendChild(bar);
+
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }

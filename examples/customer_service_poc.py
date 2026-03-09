@@ -50,6 +50,8 @@ from unified_channel import ChannelManager
 from unified_channel.adapters.telegram import TelegramAdapter
 from unified_channel.adapters.webchat import WebChatAdapter
 from unified_channel.adapters.wkim_compat import WKIMCompatAdapter
+from unified_channel.health import HealthMonitor
+from unified_channel.keyed_queue import KeyedAsyncQueue
 from unified_channel.types import (
     Button,
     ContentType,
@@ -91,6 +93,9 @@ session_channel: dict[str, str] = {}
 
 # Track pending replies for timeout alerts
 pending_replies: dict[str, asyncio.Task] = {}  # session_id → timeout task
+
+# --- Keyed queue for per-customer message serialization ---
+_msg_queue = KeyedAsyncQueue()
 
 # --- Agent list ---
 AGENTS: list[str] = os.environ.get("CS_AGENTS", "").split(",") if os.environ.get("CS_AGENTS") else []
@@ -1030,14 +1035,21 @@ async def main() -> None:
             return
 
         if msg.channel in ("webchat", "wkim"):
-            await forward_to_telegram(manager, msg)
+            # Serialize per-customer: use chat_id (session_id) as key
+            key = msg.chat_id or "unknown"
+            await _msg_queue.run(key, forward_to_telegram(manager, msg))
         elif msg.channel == "telegram":
             if msg.chat_id == SUPPORT_GROUP_ID:
                 # Check agent authorization
                 if ALLOWED_AGENTS and msg.sender.id not in ALLOWED_AGENTS:
                     logger.warning("ignored message from unauthorized user %s in support group", msg.sender.id)
                     return
-                await forward_to_user(manager, msg)
+                # Serialize per-session: use thread_id → session_id as key
+                key = topic_to_session.get(int(msg.thread_id)) if msg.thread_id else None
+                if key:
+                    await _msg_queue.run(key, forward_to_user(manager, msg))
+                else:
+                    await forward_to_user(manager, msg)
 
     # Online/offline + history hooks
     first_message_sent: set[str] = set()
@@ -1059,6 +1071,11 @@ async def main() -> None:
     await wkim.connect()
     await telegram.connect()
 
+    # --- Health monitor: auto-reconnect stale channels ---
+    health_interval = int(os.environ.get("CS_HEALTH_INTERVAL", "30"))
+    health_monitor = HealthMonitor(interval=health_interval)
+    await health_monitor.start(manager)
+
     logger.info("=" * 60)
     logger.info("Customer Service POC started! (full-featured)")
     logger.info("  Web chat:    http://localhost:%d/chat", WEBCHAT_PORT)
@@ -1067,6 +1084,7 @@ async def main() -> None:
     logger.info("  DB:          %s", DB_PATH)
     logger.info("  AI FAQ:      %s", "on" if AI_ENABLED else "off")
     logger.info("  Timeout:     %ds", REPLY_TIMEOUT_SECONDS)
+    logger.info("  Health:      every %ds", health_interval)
     logger.info("  Agents:      %s", AGENTS or "(auto-assign off)")
     logger.info("  Access:      %s", f"{len(ALLOWED_AGENTS)} allowed agents" if ALLOWED_AGENTS else "open (anyone in group can reply)")
     logger.info("  Restored:    %d sessions", len(s2t))
@@ -1075,11 +1093,14 @@ async def main() -> None:
         logger.info("    %s", line)
     logger.info("=" * 60)
 
-    await asyncio.gather(
-        manager._consume(webchat),
-        manager._consume(wkim),
-        manager._consume(telegram),
-    )
+    try:
+        await asyncio.gather(
+            manager._consume(webchat),
+            manager._consume(wkim),
+            manager._consume(telegram),
+        )
+    finally:
+        await health_monitor.stop()
 
 
 if __name__ == "__main__":

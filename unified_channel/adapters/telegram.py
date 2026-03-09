@@ -158,7 +158,16 @@ class TelegramAdapter(ChannelAdapter):
             ]
             kwargs["reply_markup"] = InlineKeyboardMarkup(keyboard)
 
-        sent = await self._app.bot.send_message(**kwargs)
+        try:
+            sent = await self._app.bot.send_message(**kwargs)
+        except Exception:
+            # Markdown/HTML parse failure — retry as plain text
+            if kwargs.get("parse_mode"):
+                logger.debug("send failed with parse_mode=%s, retrying as plain text", kwargs["parse_mode"])
+                kwargs.pop("parse_mode")
+                sent = await self._app.bot.send_message(**kwargs)
+            else:
+                raise
         self._last_activity = datetime.now()
         return str(sent.message_id)
 

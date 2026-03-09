@@ -1,11 +1,15 @@
-"""Telegram adapter — bridges python-telegram-bot to UnifiedMessage."""
+"""Telegram adapter — bridges python-telegram-bot to UnifiedMessage.
+
+Supports both polling (default) and webhook modes. Webhook mode uses
+python-telegram-bot's built-in webhook support via an aiohttp server.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 
 from telegram import Update
 from telegram.ext import (
@@ -34,6 +38,10 @@ class TelegramAdapter(ChannelAdapter):
     """
     Telegram channel adapter using python-telegram-bot.
 
+    Supports two modes:
+    - ``"polling"`` (default): long polling via ``getUpdates``
+    - ``"webhook"``: starts an HTTP server and registers a webhook URL
+
     This is the ONLY file needed to add Telegram support.
     Compare with openclaw's 125-file Telegram implementation —
     all routing/session/middleware logic lives in the shared layer.
@@ -41,14 +49,33 @@ class TelegramAdapter(ChannelAdapter):
 
     channel_id = "telegram"
 
-    def __init__(self, token: str, *, parse_mode: str = "Markdown") -> None:
+    def __init__(
+        self,
+        token: str,
+        *,
+        parse_mode: str = "Markdown",
+        mode: Literal["polling", "webhook"] = "polling",
+        webhook_url: str | None = None,
+        port: int = 8443,
+        listen: str = "0.0.0.0",
+        url_path: str = "/telegram-webhook",
+    ) -> None:
         self._token = token
         self._parse_mode = parse_mode
+        self._mode: Literal["polling", "webhook"] = mode
+        self._webhook_url = webhook_url
+        self._port = port
+        self._listen = listen
+        self._url_path = url_path
         self._app: Application | None = None  # type: ignore[type-arg]
         self._queue: asyncio.Queue[UnifiedMessage] = asyncio.Queue()
         self._connected = False
         self._last_activity: datetime | None = None
         self._bot_username: str | None = None
+
+    @property
+    def mode(self) -> str:
+        return self._mode
 
     async def connect(self) -> None:
         self._app = (
@@ -72,16 +99,23 @@ class TelegramAdapter(ChannelAdapter):
 
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)  # type: ignore[union-attr]
+
+        if self._mode == "webhook":
+            await self._start_webhook()
+        else:
+            await self._app.updater.start_polling(drop_pending_updates=True)  # type: ignore[union-attr]
 
         me = await self._app.bot.get_me()
         self._bot_username = me.username
         self._connected = True
-        logger.info("telegram connected: @%s", self._bot_username)
+        logger.info("telegram connected (%s mode): @%s", self._mode, self._bot_username)
 
     async def disconnect(self) -> None:
         if self._app:
-            await self._app.updater.stop()  # type: ignore[union-attr]
+            if self._mode == "webhook":
+                await self._stop_webhook()
+            else:
+                await self._app.updater.stop()  # type: ignore[union-attr]
             await self._app.stop()
             await self._app.shutdown()
         self._connected = False
@@ -135,6 +169,35 @@ class TelegramAdapter(ChannelAdapter):
             account_id=self._bot_username,
             last_activity=self._last_activity,
         )
+
+    # -- Webhook management --
+
+    async def _start_webhook(self) -> None:
+        if not self._webhook_url:
+            raise ValueError("webhook_url is required for webhook mode")
+
+        full_url = self._webhook_url.rstrip("/") + self._url_path
+
+        # Use python-telegram-bot's built-in webhook support
+        await self._app.updater.start_webhook(  # type: ignore[union-attr]
+            listen=self._listen,
+            port=self._port,
+            url_path=self._url_path,
+            webhook_url=full_url,
+            drop_pending_updates=True,
+        )
+        logger.info("telegram webhook started on %s:%d%s", self._listen, self._port, self._url_path)
+
+    async def _stop_webhook(self) -> None:
+        try:
+            await self._app.updater.stop()  # type: ignore[union-attr]
+        except Exception:
+            pass
+        try:
+            await self._app.bot.delete_webhook()  # type: ignore[union-attr]
+        except Exception:
+            pass
+        logger.info("telegram webhook stopped")
 
     # -- internal handlers: convert platform events to UnifiedMessage --
 

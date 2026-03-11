@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sqlite3
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -11,6 +13,8 @@ from typing import Any
 
 from .middleware import Handler, Middleware
 from .types import UnifiedMessage
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryStore(ABC):
@@ -191,6 +195,13 @@ class ConversationMemory(Middleware):
                 },
             )
 
-        # Trim to max_turns (each turn = 2 entries: user + assistant)
-        await self.store.trim(chat_key, self.max_turns)
+        # Trim in background — don't block the response
+        asyncio.create_task(self._safe_trim(chat_key))
         return result
+
+    async def _safe_trim(self, chat_key: str) -> None:
+        """Trim history in background, swallowing errors."""
+        try:
+            await self.store.trim(chat_key, self.max_turns)
+        except Exception as e:
+            logger.warning("Memory trim failed for %s: %s", chat_key, e)

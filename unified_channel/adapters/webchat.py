@@ -268,6 +268,38 @@ class WebChatAdapter(ChannelAdapter):
 
         return ws
 
+    async def send_stream_chunk(
+        self, session_id: str, chunk: str, full_text: str, msg_id: str,
+    ) -> None:
+        """Send a streaming chunk to the WebSocket client.
+
+        Wire protocol:
+            {"type": "stream", "chunk": "new tokens", "text": "full text so far", "id": "msg-id"}
+            {"type": "stream_end", "text": "final full text", "id": "msg-id"}
+        """
+        ws = self._sessions.get(session_id)
+        if not ws or ws.closed:
+            return
+        await ws.send_json({
+            "type": "stream",
+            "chunk": chunk,
+            "text": full_text,
+            "id": msg_id,
+        })
+
+    async def send_stream_end(self, session_id: str, full_text: str, msg_id: str) -> None:
+        """Signal end of streaming."""
+        ws = self._sessions.get(session_id)
+        if not ws or ws.closed:
+            return
+        await ws.send_json({
+            "type": "stream_end",
+            "text": full_text,
+            "id": msg_id,
+            "timestamp": datetime.now().isoformat(),
+        })
+        self._last_activity = datetime.now()
+
     async def _health_handler(self, request: web.Request) -> web.Response:
         return web.json_response({
             "status": "ok",

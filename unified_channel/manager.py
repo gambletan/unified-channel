@@ -132,8 +132,10 @@ class ChannelManager:
                 try:
                     reply = await self._run_pipeline(msg)
                     if reply and msg.chat_id:
-                        out = self._to_outbound(reply, msg)
-                        await adapter.send(out)
+                        # Skip send if already streamed to client
+                        if not (msg.metadata or {}).get("_streamed"):
+                            out = self._to_outbound(reply, msg)
+                            await adapter.send(out)
                 except Exception:
                     logger.exception(
                         "error processing message id=%s channel=%s",

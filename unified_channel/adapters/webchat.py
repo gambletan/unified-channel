@@ -146,7 +146,7 @@ class WebChatAdapter(ChannelAdapter):
                 "text": msg.text,
             }
 
-        msg_id = uuid.uuid4().hex[:8]
+        msg_id = (msg.metadata or {}).get("msg_id") or uuid.uuid4().hex[:8]
         payload["id"] = msg_id
         payload["timestamp"] = datetime.now().isoformat()
 

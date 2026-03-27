@@ -30,6 +30,7 @@ _ADAPTER_MAP: dict[str, tuple[str, str]] = {
     "bluebubbles": (".adapters.bluebubbles", "BlueBubblesAdapter"),
     "twitch": (".adapters.twitch", "TwitchAdapter"),
     "irc": (".adapters.irc", "IRCAdapter"),
+    "wechat_clawbot": (".adapters.wechat_clawbot", "WeChatClawBotAdapter"),
 }
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")

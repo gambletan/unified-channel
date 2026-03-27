@@ -18,6 +18,7 @@ _ADAPTERS = {
     "TwitchAdapter": ".twitch",
     "IRCAdapter": ".irc",
     "WeChatAdapter": ".wechat",
+    "WeChatClawBotAdapter": ".wechat_clawbot",
     "DingTalkAdapter": ".dingtalk",
     "QQAdapter": ".qq",
 }
